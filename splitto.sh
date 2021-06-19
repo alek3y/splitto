@@ -23,6 +23,12 @@ function error {
 	printf "%s: %s\n" "$0" "$@" >&2
 }
 
+function log {
+	if [[ $verbose -eq 1 ]]; then
+		printf "%s\n" "$@"
+	fi
+}
+
 files=()
 while [[ $# -gt 0 ]]; do
 	case $1 in
@@ -62,10 +68,25 @@ if [[ -f "$destination_file" ]]; then
 	exit 1
 fi
 
+# Sort naturally the source files, as the chunk number is the
+# only part that differs, and exclude the destination file
+source_files=($(printf "%s\n" ${files[@]::${#files[@]}-1} | sort -V))
+
+# Check if source files are valid
+for file in ${source_files[@]}; do
+	if [[ ! -f $file ]]; then
+		error "source file '$file' does not exist"
+		exit 1
+	fi
+done
+
 # Join on multiple source files
 if [[ ${#files[@]} -gt 2 ]]; then
-	# TODO: Are '*' files sorted properly?
-	echo -n
+	for file in ${source_files[@]}; do
+		log "adding chunk '$file' to file '$destination_file'.."
+		dd if="$file" bs=$(size_to_bytes $BLOCK_SIZE) status=none >> $destination_file
+	done
+	log "source files have been joined successfully"
 
 # Split on one source file
 else
