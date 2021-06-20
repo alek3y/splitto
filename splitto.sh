@@ -29,6 +29,11 @@ function log {
 	fi
 }
 
+# Apparently this is the *only way* to `ceil` :c
+function divide_ceil {
+	printf "%s\n" $((($1 + $2 - 1) / $2))
+}
+
 files=()
 while [[ $# -gt 0 ]]; do
 	case $1 in
@@ -61,16 +66,9 @@ if [[ ${#files[@]} -lt 2 ]]; then
 	exit 1
 fi
 
-# Abort if the destination exists
+source_files=($(printf "%s\n" ${files[@]::${#files[@]}-1}))		# Exclude last file
 destination_file="${files[-1]}"
-if [[ -f "$destination_file" ]]; then
-	error "destination file already exists"
-	exit 1
-fi
-
-# Sort naturally the source files, as the chunk number is the
-# only part that differs, and exclude the destination file
-source_files=($(printf "%s\n" ${files[@]::${#files[@]}-1} | sort -V))
+block_bytes=$(size_to_bytes $BLOCK_SIZE)
 
 # Check if source files are valid
 for file in ${source_files[@]}; do
@@ -82,23 +80,51 @@ done
 
 # Join on multiple source files
 if [[ ${#files[@]} -gt 2 ]]; then
+	if [[ -f "$destination_file" ]]; then
+		error "destination file already exists"
+		exit 1
+	fi
+
 	for file in ${source_files[@]}; do
 		log "adding chunk '$file' to file '$destination_file'.."
-		dd if="$file" bs=$(size_to_bytes $BLOCK_SIZE) status=none >> $destination_file
+		dd if="$file" bs=$block_bytes status=none >> $destination_file
 	done
+
 	log "source files have been joined successfully"
 
 # Split on one source file
 else
+	file_bytes=$(du -Lb ${source_files[0]} | awk '{print $1}')
+	chunk_bytes=$(size_to_bytes $chunk_size)
+	parts_count=$(divide_ceil $file_bytes $chunk_bytes)
 
-	# TODO: Get file size (bytes), convert chunk_size to bytes
-	FILE_SIZE=$(du -L -b filename | awk '{print $1}')
-	chunk_bytes=$(size_to_bytes $CHUNK_SIZE)
-	skip=0
-	while [ $skip -lt $(size_to_bytes $FILE_SIZE) ]; do
-		echo $skip
-		skip=$(($skip + $chunk_bytes))
+	# NOTE: If `chunk_bytes` is too small, it kinda bugs (https://i.imgur.com/1kasu3Z.png)
+	blocks_count=$(divide_ceil $chunk_bytes $block_bytes)
+
+	# Check if any part already exists and compute the names
+	parts=()
+	for i in $(seq -w 1 $parts_count); do
+		part_name="${destination_file}.part$i"
+
+		if [[ -f "$part_name" ]]; then
+			error "destination files already exist"
+			exit 1
+		fi
+
+		parts+=($part_name)
 	done
+
+	log "splitting file of $file_bytes bytes into $parts_count parts of $chunk_bytes bytes"
+
+	offset=0
+	for part in ${parts[@]}; do
+		log "creating part '$part'.."
+		dd if="${source_files[0]}" of="$part" bs=$block_bytes skip=$offset count=$blocks_count status=none
+
+		offset=$(($offset + $blocks_count))
+	done
+
+	log "destination files have been written successfully"
 fi
 
 exit 0
